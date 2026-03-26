@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+venv/
+
+# DB
+chess.db
+
+# Engines (large binaries)
+engines/pikafish
+engines/*.nnue
+
+# mitmproxy certs
+~/.mitmproxy/
+
+# OS
+.DS_Store

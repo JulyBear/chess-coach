@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>象棋教练 - 对局列表</title>
+<style>
+  body { font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; background: #f5f0e8; }
+  h1 { color: #8b1a1a; }
+  table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  th { background: #8b1a1a; color: white; padding: 12px; text-align: left; }
+  td { padding: 10px 12px; border-bottom: 1px solid #eee; }
+  tr:hover td { background: #fdf5e6; cursor: pointer; }
+  .empty { text-align: center; color: #999; padding: 40px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #e8d5a0; }
+</style>
+</head>
+<body>
+<h1>♟ 象棋教练 - 对局记录</h1>
+<table>
+  <thead><tr><th>对局ID</th><th>开始时间</th><th>步数</th><th>结果</th></tr></thead>
+  <tbody id="list"><tr><td colspan="4" class="empty">加载中...</td></tr></tbody>
+</table>
+<script>
+async function load() {
+  const res = await fetch('/api/games');
+  const games = await res.json();
+  const tbody = document.getElementById('list');
+  if (!games.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无对局记录。请先启动mitmproxy并进行对局。</td></tr>';
+    return;
+  }
+  tbody.innerHTML = games.map(g => `
+    <tr onclick="location.href='/web/review.html?id=${g.id}'">
+      <td>${g.matchid}</td>
+      <td>${g.start_time ? g.start_time.replace('T',' ').slice(0,19) : '-'}</td>
+      <td><span class="badge">${g.move_count} 步</span></td>
+      <td>${g.result || '-'}</td>
+    </tr>
+  `).join('');
+}
+load();
+</script>
+</body>
+</html>

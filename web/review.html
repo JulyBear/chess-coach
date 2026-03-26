@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>象棋教练 - 复盘</title>
+<link rel="stylesheet" href="/web/libs/xiangqiboard.min.css">
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: sans-serif; background: #f5f0e8; margin: 0; padding: 20px; }
+  h2 { color: #8b1a1a; margin: 0 0 16px; }
+  .layout { display: flex; gap: 20px; align-items: flex-start; }
+  .board-wrap { flex-shrink: 0; }
+  .panel { flex: 1; min-width: 280px; }
+  .card { background: white; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .controls { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  button { padding: 6px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; background: #8b1a1a; color: white; }
+  button:hover { background: #a52a2a; }
+  button.secondary { background: #888; }
+  button:disabled { background: #ccc; cursor: default; }
+  #move-list { max-height: 240px; overflow-y: auto; }
+  .move-item { display: inline-block; padding: 4px 8px; margin: 2px; border-radius: 4px; cursor: pointer; font-size: 13px; background: #f0e8d0; }
+  .move-item.active { background: #8b1a1a; color: white; }
+  .move-item.blunder { border: 2px solid #e53935; }
+  #analysis { font-size: 13px; color: #333; }
+  .score { font-size: 18px; font-weight: bold; color: #8b1a1a; }
+  #coach-report { white-space: pre-wrap; font-size: 13px; line-height: 1.8; color: #333; max-height: 400px; overflow-y: auto; }
+  .loading { color: #999; font-style: italic; }
+  a { color: #8b1a1a; }
+  #progress { font-size: 12px; color: #888; margin-top: 4px; }
+</style>
+</head>
+<body>
+<h2>♟ 象棋教练 - <a href="/web/index.html">← 返回列表</a></h2>
+<div class="layout">
+  <div class="board-wrap">
+    <div id="board" style="width:400px"></div>
+    <div class="controls" style="margin-top:12px">
+      <button onclick="goFirst()">⏮</button>
+      <button onclick="goPrev()">◀</button>
+      <button onclick="goNext()">▶</button>
+      <button onclick="goLast()">⏭</button>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="card">
+      <b>走法列表</b>
+      <div id="move-list"></div>
+    </div>
+    <div class="card">
+      <b>引擎分析</b>
+      <div id="analysis"><span class="loading">点击走法查看引擎评分</span></div>
+    </div>
+    <div class="card">
+      <b>AI教练点评</b>
+      <div style="margin-bottom:8px">
+        <button onclick="requestCoach()" id="coach-btn">生成复盘报告</button>
+        <div id="progress"></div>
+      </div>
+      <div id="coach-report"><span class="loading">点击「生成复盘报告」获取AI分析</span></div>
+    </div>
+  </div>
+</div>
+
+<script src="/web/libs/jquery.min.js"></script>
+<script src="/web/libs/xiangqiboard.min.js"></script>
+<script src="/web/libs/xiangqi-0.3.1-dev.min.js"></script>
+<script>
+const params = new URLSearchParams(location.search);
+const gameId = params.get('id');
+let moves = [];
+let analysisData = {};
+let currentIdx = -1;
+let board;
+
+async function init() {
+  if (!gameId) { alert('缺少对局ID'); return; }
+
+  board = XiangqiBoard('board', {
+    position: 'start',
+    showNotation: true,
+  });
+
+  const res = await fetch(`/api/games/${gameId}`);
+  const data = await res.json();
+  moves = data.moves || [];
+
+  renderMoveList();
+  goFirst();
+
+  // 后台加载引擎分析
+  fetchAnalysis();
+}
+
+function renderMoveList() {
+  const el = document.getElementById('move-list');
+  let html = '<span class="move-item" onclick="goFirst()">开始</span>';
+  moves.forEach((m, i) => {
+    const side = m.seat === 0 ? '红' : '黑';
+    const label = `${m.move_no}.${side}${uciLabel(m)}`;
+    html += `<span class="move-item" id="mi-${i}" onclick="goTo(${i})">${label}</span>`;
+  });
+  el.innerHTML = html;
+}
+
+function uciLabel(m) {
+  const cols = '九八七六五四三二一';
+  const rows = '１２３４５６７８９０';
+  // 红方用繁体数字，黑方用阿拉伯数字（简化显示）
+  return `(${m.from_x},${m.from_y})→(${m.to_x},${m.to_y})`;
+}
+
+function goTo(idx) {
+  currentIdx = idx;
+  const fen = idx >= 0 ? moves[idx].fen : 'start';
+  board.position(fen);
+  document.querySelectorAll('.move-item').forEach(el => el.classList.remove('active'));
+  const el = document.getElementById(`mi-${idx}`);
+  if (el) { el.classList.add('active'); el.scrollIntoView({block:'nearest'}); }
+  showAnalysis(idx);
+}
+
+function goFirst() { goTo(-1); }
+function goLast() { goTo(moves.length - 1); }
+function goPrev() { if (currentIdx > -1) goTo(currentIdx - 1); }
+function goNext() { if (currentIdx < moves.length - 1) goTo(currentIdx + 1); }
+
+async function fetchAnalysis() {
+  try {
+    const res = await fetch(`/api/games/${gameId}/analyze`);
+    const data = await res.json();
+    data.forEach(a => { analysisData[a.move_no] = a; });
+    // 标记失误节点
+    markBlunders();
+    showAnalysis(currentIdx);
+  } catch(e) { console.warn('引擎分析失败', e); }
+}
+
+function markBlunders() {
+  moves.forEach((m, i) => {
+    const a = analysisData[m.move_no];
+    if (a && a.is_blunder) {
+      const el = document.getElementById(`mi-${i}`);
+      if (el) el.classList.add('blunder');
+    }
+  });
+}
+
+function showAnalysis(idx) {
+  const el = document.getElementById('analysis');
+  if (idx < 0) { el.innerHTML = '<span class="loading">开始局面</span>'; return; }
+  const m = moves[idx];
+  const a = analysisData[m.move_no];
+  if (!a) { el.innerHTML = '<span class="loading">分析中...</span>'; return; }
+  const scoreStr = a.score > 0 ? `+${a.score.toFixed(2)}` : a.score.toFixed(2);
+  el.innerHTML = `
+    <div>步数：${m.move_no} | <span class="score">${scoreStr}</span></div>
+    <div>引擎最佳：${a.best_move || '-'}</div>
+    <div>主变：${a.pv || '-'}</div>
+    ${a.is_blunder ? '<div style="color:#e53935">⚠ 关键失误</div>' : ''}
+  `;
+}
+
+async function requestCoach() {
+  const btn = document.getElementById('coach-btn');
+  const report = document.getElementById('coach-report');
+  const progress = document.getElementById('progress');
+  btn.disabled = true;
+  report.innerHTML = '<span class="loading">AI教练分析中，请稍候...</span>';
+  progress.textContent = '';
+  try {
+    const res = await fetch(`/api/games/${gameId}/coach`, {method:'POST'});
+    const data = await res.json();
+    report.textContent = data.report || '分析失败';
+  } catch(e) {
+    report.textContent = '请求失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') goPrev();
+  if (e.key === 'ArrowRight') goNext();
+});
+
+init();
+</script>
+</body>
+</html>
