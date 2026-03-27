@@ -21,12 +21,31 @@
   .move-item { display: inline-block; padding: 4px 8px; margin: 2px; border-radius: 4px; cursor: pointer; font-size: 13px; background: #f0e8d0; }
   .move-item.active { background: #8b1a1a; color: white; }
   .move-item.blunder { border: 2px solid #e53935; }
-  #analysis { font-size: 13px; color: #333; }
-  .score { font-size: 18px; font-weight: bold; color: #8b1a1a; }
-  #coach-report { white-space: pre-wrap; font-size: 13px; line-height: 1.8; color: #333; max-height: 400px; overflow-y: auto; }
-  .loading { color: #999; font-style: italic; }
-  a { color: #8b1a1a; }
-  #progress { font-size: 12px; color: #888; margin-top: 4px; }
+  .chart-wrap { margin-top: 12px; }
+  #eval-chart { width: 100%; height: 180px; display: block; background: #faf7f1; border: 1px solid #eadfcd; border-radius: 6px; }
+  .chart-axis { stroke: #d7c8b0; stroke-width: 1; }
+  .chart-guide { stroke: #e9dcc7; stroke-width: 1; stroke-dasharray: 4 4; }
+  .chart-line-red { fill: none; stroke: #c62828; stroke-width: 2.5; }
+  .chart-line-black { fill: none; stroke: #37474f; stroke-width: 2.5; }
+  .chart-line-neutral { fill: none; stroke: #8d6e63; stroke-width: 2.5; }
+  .chart-dot { cursor: pointer; }
+  .chart-dot.red { fill: #e53935; }
+  .chart-dot.black { fill: #455a64; }
+  .chart-dot.neutral { fill: #8d6e63; }
+  .chart-dot.active { stroke: #1565c0; stroke-width: 3; }
+  .chart-blunder { fill: none; stroke: #ff9800; stroke-width: 2; pointer-events: none; }
+  .chart-label { fill: #888; font-size: 11px; }
+  .chart-legend-red { fill: #c62828; font-size: 11px; }
+  .chart-legend-black { fill: #37474f; font-size: 11px; }
+  /* 主变演示 */
+  #variation-bar { display:none; margin-top:10px; padding:10px 12px; background:#e8eaf6; border-radius:6px; border-left:4px solid #3949ab; }
+  .pv-step { display:inline-block; padding:3px 8px; border-radius:4px; cursor:pointer; font-size:12px; font-family:monospace; background:#c5cae9; color:#1a237e; margin:2px; }
+  .pv-step.active { background:#3949ab; color:white; }
+  .pv-step.visited { background:#9fa8da; }
+  button.btn-var { background:#3949ab; font-size:12px; padding:3px 10px; }
+  button.btn-var:hover { background:#283593; }
+  button.btn-demo { background:#5c6bc0; font-size:12px; padding:2px 8px; }
+  button.btn-demo:hover { background:#3949ab; }
 </style>
 </head>
 <body>
@@ -40,6 +59,15 @@
       <button onclick="goNext()">▶</button>
       <button onclick="goLast()">⏭</button>
     </div>
+    <div id="variation-bar">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <b style="color:#1a237e;font-size:13px">🔀 主变演示</b>
+        <span id="pv-step-label" style="font-size:12px;color:#5c6bc0"></span>
+        <span style="flex:1"></span>
+        <button class="btn-var" onclick="exitVariation()">↩ 返回本局</button>
+      </div>
+      <div id="pv-moves" style="display:flex;flex-wrap:wrap;max-height:160px;overflow-y:auto;width:376px"></div>
+    </div>
   </div>
   <div class="panel">
     <div class="card">
@@ -47,8 +75,14 @@
       <div id="move-list"></div>
     </div>
     <div class="card">
-      <b>引擎分析</b>
-      <div id="analysis"><span class="loading">点击走法查看引擎评分</span></div>
+      <div class="controls">
+        <b style="display:flex;align-items:center">引擎分析</b>
+        <button class="secondary" onclick="requestAnalysis()" id="analysis-btn">生成引擎分析</button>
+      </div>
+      <div id="analysis"><span class="loading">先生成或读取已有分析结果</span></div>
+      <div class="chart-wrap">
+        <svg id="eval-chart" viewBox="0 0 640 180" preserveAspectRatio="none"></svg>
+      </div>
     </div>
     <div class="card">
       <b>AI教练点评</b>
@@ -67,28 +101,157 @@
 <script>
 const params = new URLSearchParams(location.search);
 const gameId = params.get('id');
+let game = null;
 let moves = [];
 let analysisData = {};
+let coachReport = null;
 let currentIdx = -1;
 let board;
+let chartReady = false;
+
+// ── 主变演示状态 ─────────────────────────────────────────────────
+let inVariation = false;
+let pvFens = [];      // 主变各步的 FEN（pvFens[0] = 起点）
+let pvMoves = [];     // UCI 走法列表
+let pvIdx = 0;        // 当前在主变中的位置
+let preVarIdx = -1;   // 进入主变前保存的本局位置
+let _pvFenCtx = null; // 当前分析面板对应的起点 FEN
+let _pvStrCtx = null; // 当前分析面板对应的 PV 字符串
+
+/** 将 UCI 走法（如 "b3c3"）应用到 FEN，返回新 FEN */
+function applyMoveToFen(fen, uci) {
+  const fc = uci.charCodeAt(0) - 97, fr = parseInt(uci[1]);
+  const tc = uci.charCodeAt(2) - 97, tr = parseInt(uci[3]);
+  const parts = fen.split(' ');
+  // board[i] = FEN 第 i 段（i=0 黑方顶，i=9 红方底）
+  // UCI rank r → board 索引 = 9-r
+  const board = parts[0].split('/').map(s => {
+    const row = [];
+    for (const ch of s) {
+      if (ch >= '1' && ch <= '9') for (let i = 0; i < +ch; i++) row.push('');
+      else row.push(ch);
+    }
+    return row;
+  });
+  const piece = board[9 - fr][fc];
+  board[9 - fr][fc] = '';
+  board[9 - tr][tc] = piece;
+  const newRanks = board.map(row => {
+    let s = '', e = 0;
+    for (const c of row) { if (!c) e++; else { if (e) { s += e; e = 0; } s += c; } }
+    if (e) s += e;
+    return s;
+  });
+  const side = parts[1] === 'w' ? 'b' : 'w';
+  const full = parseInt(parts[5] || 1);
+  return `${newRanks.join('/')} ${side} - - 0 ${side === 'w' ? full + 1 : full}`;
+}
+
+function enterVariation(startFen, pvStr) {
+  if (!pvStr || !pvStr.trim()) return;
+  preVarIdx = currentIdx;
+  pvMoves = pvStr.trim().split(/\s+/);
+  pvFens = [startFen];
+  let fen = startFen;
+  for (const mv of pvMoves) {
+    try { fen = applyMoveToFen(fen, mv); pvFens.push(fen); }
+    catch(e) { console.warn('PV apply error:', mv, e); break; }
+  }
+  inVariation = true;
+  pvIdx = 0;
+  _renderVariationBar();
+  _pvGoTo(0);
+}
+
+function exitVariation() {
+  inVariation = false;
+  document.getElementById('variation-bar').style.display = 'none';
+  goTo(preVarIdx);
+}
+
+function _pvGoTo(idx) {
+  pvIdx = Math.max(0, Math.min(idx, pvFens.length - 1));
+  board.position(normalizeBoardFen(pvFens[pvIdx]));
+  _renderVariationBar();
+}
+
+function _renderVariationBar() {
+  const bar = document.getElementById('variation-bar');
+  if (!inVariation) { bar.style.display = 'none'; return; }
+  bar.style.display = 'block';
+  document.getElementById('pv-step-label').textContent =
+    pvIdx === 0 ? '（起点）' : `第 ${pvIdx} / ${pvMoves.length} 步`;
+  let html = `<span class="pv-step${pvIdx===0?' active':''}" onclick="_pvGoTo(0)">起点</span>`;
+  pvMoves.forEach((mv, i) => {
+    const cls = pvIdx === i+1 ? ' active' : pvIdx > i+1 ? ' visited' : '';
+    html += `<span class="pv-step${cls}" onclick="_pvGoTo(${i+1})">${i+1}.${mv}</span>`;
+  });
+  document.getElementById('pv-moves').innerHTML = html;
+}
+
+function normalizeBoardFen(fen) {
+  if (!fen || fen === 'start') return 'start';
+  return fen
+    .replace(/H/g, 'N')
+    .replace(/E/g, 'B')
+    .replace(/h/g, 'n')
+    .replace(/e/g, 'b');
+}
 
 async function init() {
   if (!gameId) { alert('缺少对局ID'); return; }
 
-  board = XiangqiBoard('board', {
+  board = Xiangqiboard('board', {
     position: 'start',
+    orientation: 'w',
     showNotation: true,
+    pieceTheme: '/web/img/xiangqipieces/wikimedia/{piece}.svg',
+    boardTheme: '/web/img/xiangqiboards/wikimedia/xiangqiboard.svg'
   });
 
-  const res = await fetch(`/api/games/${gameId}`);
-  const data = await res.json();
-  moves = data.moves || [];
+  await loadGame();
+
+  // rain 是黑方时翻转棋盘，让 rain 永远在下方
+  if (game && game.my_seat === 1) {
+    board.orientation('black');
+  }
+
+  await loadAnalysis();
+  await loadCoachReport();
 
   renderMoveList();
+  renderEvalChart();
   goFirst();
+}
 
-  // 后台加载引擎分析
-  fetchAnalysis();
+async function loadGame() {
+  const res = await fetch(`/api/games/${gameId}`);
+  const data = await res.json();
+  game = data.game || null;
+  moves = data.moves || [];
+}
+
+async function loadAnalysis() {
+  analysisData = {};
+  try {
+    const res = await fetch(`/api/games/${gameId}/analysis`);
+    const data = await res.json();
+    (data || []).forEach(a => { analysisData[a.move_no] = a; });
+  } catch (e) {
+    console.warn('读取引擎分析失败', e);
+  }
+}
+
+async function loadCoachReport() {
+  coachReport = null;
+  try {
+    const res = await fetch(`/api/games/${gameId}/coach-report`);
+    const data = await res.json();
+    coachReport = data && data.report ? data : null;
+  } catch (e) {
+    console.warn('读取教练报告失败', e);
+  }
+  renderCoachReport();
 }
 
 function renderMoveList() {
@@ -97,66 +260,198 @@ function renderMoveList() {
   moves.forEach((m, i) => {
     const side = m.seat === 0 ? '红' : '黑';
     const label = `${m.move_no}.${side}${uciLabel(m)}`;
-    html += `<span class="move-item" id="mi-${i}" onclick="goTo(${i})">${label}</span>`;
+    const classes = ['move-item'];
+    const a = analysisData[m.move_no];
+    if (a && a.is_blunder) classes.push('blunder');
+    html += `<span class="${classes.join(' ')}" id="mi-${i}" onclick="goTo(${i})">${label}</span>`;
   });
   el.innerHTML = html;
 }
 
+function renderCoachReport() {
+  const report = document.getElementById('coach-report');
+  if (!coachReport || !coachReport.report) {
+    report.innerHTML = '<span class="loading">点击「生成复盘报告」获取AI分析</span>';
+    return;
+  }
+  report.textContent = coachReport.report;
+}
+
+function getAnalysisSeries() {
+  return Object.values(analysisData)
+    .sort((a, b) => a.move_no - b.move_no)
+    .map(item => ({
+      moveNo: item.move_no,
+      rawScore: Number(item.score || 0),
+      score: Number(item.score_red ?? item.score ?? 0),
+      isBlunder: !!item.is_blunder,
+    }));
+}
+
+function renderEvalChart() {
+  const chart = document.getElementById('eval-chart');
+  const series = getAnalysisSeries();
+  if (!series.length) {
+    chart.innerHTML = '<text x="50%" y="50%" text-anchor="middle" class="chart-label">暂无局势曲线，请先生成引擎分析</text>';
+    chartReady = false;
+    return;
+  }
+
+  const width = 640;
+  const height = 180;
+  const padding = { top: 16, right: 18, bottom: 24, left: 34 };
+  const cappedValues = series.map(item => Math.max(-6, Math.min(6, item.score)));
+  const maxAbs = Math.max(1, ...cappedValues.map(v => Math.abs(v)));
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const stepX = series.length > 1 ? innerWidth / (series.length - 1) : 0;
+  const xAt = index => padding.left + stepX * index;
+  const yAt = value => padding.top + ((maxAbs - value) / (maxAbs * 2)) * innerHeight;
+  const zeroY = yAt(0);
+
+  const points = [];
+
+  series.forEach((item, index) => {
+    const score = cappedValues[index];
+    const point = {
+      ...item,
+      score,
+      x: xAt(index),
+      y: yAt(score),
+      chartIdx: item.moveNo === 0 ? -1 : moves.findIndex(m => m.move_no === item.moveNo),
+      color: score > 0.15 ? 'red' : score < -0.15 ? 'black' : 'neutral',
+    };
+    points.push(point);
+  });
+
+  // 逐段连线，每段颜色由起点决定，保证曲线连续不断
+  const segmentLines = points.slice(0, -1).map((p, i) => {
+    const next = points[i + 1];
+    const cls = p.color === 'red' ? 'chart-line-red' : p.color === 'black' ? 'chart-line-black' : 'chart-line-neutral';
+    return `<line class="${cls}" x1="${p.x}" y1="${p.y}" x2="${next.x}" y2="${next.y}"></line>`;
+  }).join('');
+
+  const blunderMarks = points
+    .filter(point => point.isBlunder)
+    .map(point => `<circle class="chart-blunder" cx="${point.x}" cy="${point.y}" r="8"></circle>`)
+    .join('');
+
+  const dots = points.map(point => {
+    const active = currentIdx === point.chartIdx ? ' active' : '';
+    const titleScore = point.score > 0 ? `红优 ${point.score.toFixed(2)}` : point.score < 0 ? `黑优 ${Math.abs(point.score).toFixed(2)}` : '均势';
+    return `<circle class="chart-dot ${point.color}${active}" cx="${point.x}" cy="${point.y}" r="4" onclick="goTo(${point.chartIdx})"><title>第${point.moveNo}步 ${titleScore}</title></circle>`;
+  }).join('');
+
+  chart.innerHTML = `
+    <line class="chart-guide" x1="${padding.left}" y1="${padding.top}" x2="${width - padding.right}" y2="${padding.top}"></line>
+    <line class="chart-axis" x1="${padding.left}" y1="${zeroY}" x2="${width - padding.right}" y2="${zeroY}"></line>
+    <line class="chart-guide" x1="${padding.left}" y1="${height - padding.bottom}" x2="${width - padding.right}" y2="${height - padding.bottom}"></line>
+    <line class="chart-axis" x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${height - padding.bottom}"></line>
+    ${segmentLines}
+    ${blunderMarks}
+    ${dots}
+    <text class="chart-label" x="${padding.left}" y="${height - 6}">开局</text>
+    <text class="chart-label" x="${width - padding.right}" y="${height - 6}" text-anchor="end">后续</text>
+    <text class="chart-legend-red" x="8" y="${padding.top + 8}">红方优势</text>
+    <text class="chart-label" x="8" y="${zeroY - 4}">均势</text>
+    <text class="chart-legend-black" x="8" y="${height - padding.bottom}">黑方优势</text>
+  `;
+  chartReady = true;
+}
+
 function uciLabel(m) {
-  const cols = '九八七六五四三二一';
-  const rows = '１２３４５６７８９０';
-  // 红方用繁体数字，黑方用阿拉伯数字（简化显示）
   return `(${m.from_x},${m.from_y})→(${m.to_x},${m.to_y})`;
 }
 
 function goTo(idx) {
+  // 点击本局走法时自动退出主变
+  if (inVariation) {
+    inVariation = false;
+    document.getElementById('variation-bar').style.display = 'none';
+  }
   currentIdx = idx;
-  const fen = idx >= 0 ? moves[idx].fen : 'start';
+  const fen = idx >= 0 ? normalizeBoardFen(moves[idx].fen) : 'start';
   board.position(fen);
   document.querySelectorAll('.move-item').forEach(el => el.classList.remove('active'));
   const el = document.getElementById(`mi-${idx}`);
   if (el) { el.classList.add('active'); el.scrollIntoView({block:'nearest'}); }
   showAnalysis(idx);
+  if (chartReady) renderEvalChart();
 }
 
-function goFirst() { goTo(-1); }
-function goLast() { goTo(moves.length - 1); }
-function goPrev() { if (currentIdx > -1) goTo(currentIdx - 1); }
-function goNext() { if (currentIdx < moves.length - 1) goTo(currentIdx + 1); }
+function goFirst() {
+  if (inVariation) { _pvGoTo(0); return; }
+  goTo(-1);
+}
+function goLast() {
+  if (inVariation) { _pvGoTo(pvFens.length - 1); return; }
+  goTo(moves.length - 1);
+}
+function goPrev() {
+  if (inVariation) { _pvGoTo(pvIdx - 1); return; }
+  if (currentIdx > -1) goTo(currentIdx - 1);
+}
+function goNext() {
+  if (inVariation) { _pvGoTo(pvIdx + 1); return; }
+  if (currentIdx < moves.length - 1) goTo(currentIdx + 1);
+}
 
-async function fetchAnalysis() {
+async function requestAnalysis() {
+  const btn = document.getElementById('analysis-btn');
+  const el = document.getElementById('analysis');
+  btn.disabled = true;
+  el.innerHTML = '<span class="loading">引擎分析中，请稍候...</span>';
   try {
-    const res = await fetch(`/api/games/${gameId}/analyze`);
-    const data = await res.json();
-    data.forEach(a => { analysisData[a.move_no] = a; });
-    // 标记失误节点
-    markBlunders();
-    showAnalysis(currentIdx);
-  } catch(e) { console.warn('引擎分析失败', e); }
-}
-
-function markBlunders() {
-  moves.forEach((m, i) => {
-    const a = analysisData[m.move_no];
-    if (a && a.is_blunder) {
-      const el = document.getElementById(`mi-${i}`);
-      if (el) el.classList.add('blunder');
+    const res = await fetch(`/api/games/${gameId}/analysis`, { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || '生成分析失败');
     }
-  });
+    await loadAnalysis();
+    renderMoveList();
+    renderEvalChart();
+    showAnalysis(currentIdx);
+  } catch (e) {
+    el.textContent = '请求失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function showAnalysis(idx) {
   const el = document.getElementById('analysis');
-  if (idx < 0) { el.innerHTML = '<span class="loading">开始局面</span>'; return; }
+  if (idx < 0) {
+    const start = analysisData[0];
+    if (!start) {
+      el.innerHTML = '<span class="loading">开始局面（暂无引擎分析）</span>';
+      return;
+    }
+    const startScore = Number(start.score || 0);
+    const scoreText = startScore > 0 ? `红优 +${startScore.toFixed(2)}` : startScore < 0 ? `黑优 ${Math.abs(startScore).toFixed(2)}` : '均势 0.00';
+    el.innerHTML = `
+      <div>步数：0 | <span class="score">${scoreText}</span></div>
+      <div>引擎最佳：${start.best_move || '-'}</div>
+      <div>主变：${start.pv || '-'}</div>
+    `;
+    return;
+  }
   const m = moves[idx];
   const a = analysisData[m.move_no];
-  if (!a) { el.innerHTML = '<span class="loading">分析中...</span>'; return; }
-  const scoreStr = a.score > 0 ? `+${a.score.toFixed(2)}` : a.score.toFixed(2);
+  if (!a) { el.innerHTML = '<span class="loading">暂无该步分析，请先生成引擎分析</span>'; return; }
+  const scoreRed = Number(a.score_red ?? a.score ?? 0);
+  const scoreText = scoreRed > 0 ? `红优 +${scoreRed.toFixed(2)}` : scoreRed < 0 ? `黑优 ${Math.abs(scoreRed).toFixed(2)}` : '均势 0.00';
+  // 保存当前分析上下文，供"演示"按钮使用
+  _pvFenCtx = m.fen;
+  _pvStrCtx = a.pv || '';
+  const pvPreview = a.pv ? a.pv.split(' ').slice(0, 6).join(' ') + (a.pv.split(' ').length > 6 ? '…' : '') : '-';
+  const pvHtml = a.pv
+    ? `<div>主变：<button class="btn-demo" onclick="enterVariation(_pvFenCtx,_pvStrCtx)">▶ 演示</button> <code style="font-size:11px;color:#666">${pvPreview}</code></div>`
+    : `<div>主变：-</div>`;
   el.innerHTML = `
-    <div>步数：${m.move_no} | <span class="score">${scoreStr}</span></div>
+    <div>步数：${m.move_no} | <span class="score">${scoreText}</span></div>
     <div>引擎最佳：${a.best_move || '-'}</div>
-    <div>主变：${a.pv || '-'}</div>
-    ${a.is_blunder ? '<div style="color:#e53935">⚠ 关键失误</div>' : ''}
+    ${pvHtml}
+    ${a.is_blunder ? '<div style="color:#ff9800">⚠ 关键失误</div>' : ''}
   `;
 }
 
@@ -168,9 +463,12 @@ async function requestCoach() {
   report.innerHTML = '<span class="loading">AI教练分析中，请稍候...</span>';
   progress.textContent = '';
   try {
-    const res = await fetch(`/api/games/${gameId}/coach`, {method:'POST'});
-    const data = await res.json();
-    report.textContent = data.report || '分析失败';
+    const res = await fetch(`/api/games/${gameId}/coach-report`, {method:'POST'});
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || '生成报告失败');
+    }
+    await loadCoachReport();
   } catch(e) {
     report.textContent = '请求失败：' + e.message;
   } finally {

@@ -12,12 +12,16 @@
   tr:hover td { background: #fdf5e6; cursor: pointer; }
   .empty { text-align: center; color: #999; padding: 40px; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #e8d5a0; }
+  .red-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #ffcdd2; color: #b71c1c; font-weight: bold; }
+  .black-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #424242; color: #fff; font-weight: bold; }
+  .win { color: #2e7d32; font-weight: bold; }
+  .loss { color: #c62828; font-weight: bold; }
 </style>
 </head>
 <body>
 <h1>♟ 象棋教练 - 对局记录</h1>
 <table>
-  <thead><tr><th>对局ID</th><th>开始时间</th><th>步数</th><th>结果</th></tr></thead>
+  <thead><tr><th>对局ID</th><th>开始时间</th><th>步数</th><th>我方</th><th>结果</th></tr></thead>
   <tbody id="list"><tr><td colspan="4" class="empty">加载中...</td></tr></tbody>
 </table>
 <script>
@@ -29,14 +33,22 @@ async function load() {
     tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无对局记录。请先启动mitmproxy并进行对局。</td></tr>';
     return;
   }
-  tbody.innerHTML = games.map(g => `
+  tbody.innerHTML = games.map(g => {
+    const colorBadge = g.my_seat === 0
+      ? '<span class="red-badge">红</span>'
+      : g.my_seat === 1
+        ? '<span class="black-badge">黑</span>'
+        : '-';
+    const resultCls = g.result === '胜' ? 'win' : g.result === '负' ? 'loss' : '';
+    return `
     <tr onclick="location.href='/web/review.html?id=${g.id}'">
       <td>${g.matchid}</td>
       <td>${g.start_time ? g.start_time.replace('T',' ').slice(0,19) : '-'}</td>
       <td><span class="badge">${g.move_count} 步</span></td>
-      <td>${g.result || '-'}</td>
-    </tr>
-  `).join('');
+      <td>${colorBadge}</td>
+      <td class="${resultCls}">${g.result || '-'}</td>
+    </tr>`;
+  }).join('');
 }
 load();
 </script>

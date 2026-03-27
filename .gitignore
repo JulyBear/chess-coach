@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .env
 venv/
+.venv/
 
 # DB
 chess.db
@@ -14,6 +15,9 @@ engines/*.nnue
 
 # mitmproxy certs
 ~/.mitmproxy/
+
+# Config with secrets
+config.json
 
 # OS
 .DS_Store

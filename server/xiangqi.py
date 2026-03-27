@@ -3,11 +3,18 @@
 
 JJ象棋坐标系：
   x: 0-8（列，左到右）
-  y: 0-9（行，红方在 y=9 侧，黑方在 y=0 侧）
+  y: 0-9（行，y=0=红方底线，y=9=黑方顶线）
+  — 即从红方视角向前数，与 Pikafish UCI rank 相同
 
-FEN坐标系（标准象棋FEN）：
-  rank 0 = y=0（黑方底线），rank 9 = y=9（红方底线）
+UCI/Pikafish rank 坐标系：
+  rank 0 = 红方底线，rank 9 = 黑方顶线
+  rank == JJ y（两者一致）
   file 0-8 对应 x=0-8
+
+FEN 字符串排列（_fen_to_board 中的 board 索引）：
+  board[0] = FEN 第一段  = 黑方顶线（Pikafish rank 9 / JJ y=9）
+  board[9] = FEN 第十段  = 红方底线（Pikafish rank 0 / JJ y=0）
+  因此：board 索引 = 9 - JJ_y，即 board[9-y][x] 才是正确映射。
 """
 
 # 初始局面 FEN
@@ -26,7 +33,10 @@ _PIECE_MAP = {
 
 
 def coords_to_uci(from_x: int, from_y: int, to_x: int, to_y: int) -> str:
-    """JJ坐标 → UCI走法字符串，如 'a9b9'"""
+    """JJ坐标 → 走法标识字符串（仅用于日志展示，不用于引擎输入）。
+    注：JJ y=0 对应黑方顶线，而 Pikafish UCI rank=0 是红方底线，两者相反。
+    引擎分析始终使用 FEN 字符串而非此格式。
+    """
     col_from = chr(ord('a') + from_x)
     col_to = chr(ord('a') + to_x)
     return f"{col_from}{from_y}{col_to}{to_y}"
@@ -34,12 +44,14 @@ def coords_to_uci(from_x: int, from_y: int, to_x: int, to_y: int) -> str:
 
 def apply_move(fen: str, from_x: int, from_y: int, to_x: int, to_y: int) -> str:
     """在给定FEN上执行一步走法，返回新FEN。
-    简化实现：只更新棋盘部分，不处理将军/合法性验证（由引擎负责）。
+    JJ y=0=红方底线，Pikafish rank 0=红方底线，两者一致。
+    _fen_to_board 中 board[0]=黑方顶线（rank 9），board[9]=红方底线（rank 0），
+    所以正确映射是 board[9-y][x]。
     """
     board = _fen_to_board(fen)
-    piece = board[from_y][from_x]
-    board[from_y][from_x] = None
-    board[to_y][to_x] = piece
+    piece = board[9 - from_y][from_x]
+    board[9 - from_y][from_x] = None
+    board[9 - to_y][to_x] = piece
 
     # 切换走棋方
     parts = fen.split()
